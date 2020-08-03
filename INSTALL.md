@@ -10,6 +10,7 @@
   - [RHEL](#rhel---binary)
   - [Amazon Linux 1](#Amazon-Linux-1---Binary)
   - [Amazon Linux 2](#Amazon-Linux-2---Binary)
+  - [Alpine](#alpine---binary)
 * [Source](#source)
   - [Debian](#debian---source)
   - [Ubuntu](#ubuntu---source)
@@ -17,6 +18,7 @@
   - [openSUSE](#opensuse---source)
   - [Centos](#centos---source)
   - [Amazon Linux](#amazon-linux---source)
+  - [Alpine](#alpine---source)
 * [Older Instructions](#older-instructions)
 
 ## Kernel Configuration
@@ -58,21 +60,23 @@ Kernel compile flags can usually be checked by looking at `/proc/config.gz` or
 
 ## Ubuntu - Binary
 
-**Ubuntu Packages**
-
 Versions of bcc are available in the standard Ubuntu
-multiverse repository. The Ubuntu packages have slightly different names: where iovisor
+Universe repository, as well in iovisor's PPA. The Ubuntu packages have slightly different names: where iovisor
 packages use `bcc` in the name (e.g. `bcc-tools`), Ubuntu packages use `bpfcc` (e.g.
-`bpfcc-tools`). Source packages and the binary packages produced from them can be
+`bpfcc-tools`).
+
+Currently, BCC packages for both the Ubuntu Universe, and the iovisor builds are outdated. This is a known and tracked in:
+- [Universe - Ubuntu Launchpad](https://bugs.launchpad.net/ubuntu/+source/bpfcc/+bug/1848137)
+- [iovisor - BCC GitHub Issues](https://github.com/iovisor/bcc/issues/2678)
+Currently, [building from source](#ubuntu---source) is currently the only way to get up to date packaged version of bcc.
+
+**Ubuntu Packages**
+Source packages and the binary packages produced from them can be
 found at [packages.ubuntu.com](https://packages.ubuntu.com/search?suite=default&section=all&arch=any&keywords=bpfcc&searchon=sourcenames).
 
 ```bash
 sudo apt-get install bpfcc-tools linux-headers-$(uname -r)
 ```
-
-Some of the BCC tools are currently broken due to outdated packages. This is a
-[known bug](https://bugs.launchpad.net/ubuntu/+source/bpfcc/+bug/1848137).
-Therefore [building from source](#ubuntu---source) is currently the only way to get fully working tools.
 
 The tools are installed in `/sbin` (`/usr/sbin` in Ubuntu 18.04) with a `-bpfcc` extension. Try running `sudo opensnoop-bpfcc`.
 
@@ -87,7 +91,7 @@ which declares a dependency on `libbpfcc` while the upstream `libbcc` package is
 `foo` should install without trouble as `libbcc` declares that it provides `libbpfcc`.
 That said, one should always test such a configuration in case of version incompatibilities.
 
-**Upstream Stable and Signed Packages**
+**iovisor packages (Upstream Stable and Signed Packages)**
 
 ```bash
 sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 4052245BD4284CDD
@@ -231,6 +235,36 @@ sudo yum install kernel-devel-$(uname -r)
 sudo yum install bcc
 ```
 
+## Alpine - Binary
+
+As of Alpine 3.11, bcc binaries are available in the community repository:
+
+```
+sudo apk add bcc-tools bcc-doc
+```
+
+The tools are installed in `/usr/share/bcc/tools`.
+
+**Python Compatibility**
+
+The binary packages include bindings for Python 3 only. The Python-based tools assume that a `python` binary is available at `/usr/bin/python`, but that may not be true on recent versions of Alpine. If you encounter errors like `<tool-name>: not found`, you can try creating a symlink to the Python 3.x binary like so:
+
+```
+sudo ln -s $(which python3) /usr/bin/python
+```
+
+**Containers**
+
+Alpine Linux is often used as a base system for containers. `bcc` can be used in such an environment by launching the container in privileged mode with kernel modules available through bind mounts:
+
+```
+sudo docker run --rm -it --privileged \
+  -v /lib/modules:/lib/modules:ro \
+  -v /sys:/sys:ro \
+  -v /usr/src:/usr/src:ro \
+  alpine:3.12
+```
+
 # Source
 
 ## libbpf Submodule
@@ -349,7 +383,7 @@ sudo apt-get update
 sudo apt-get -y install bison build-essential cmake flex git libedit-dev \
   libllvm6.0 llvm-6.0-dev libclang-6.0-dev python zlib1g-dev libelf-dev
 
-# For Eon (19.10)
+# For Eoan (19.10)
 sudo apt install -y bison build-essential cmake flex git libedit-dev \
   libllvm7 llvm-7-dev libclang-7-dev python zlib1g-dev libelf-dev
 
@@ -498,7 +532,7 @@ For permanently enable scl environment, please check https://access.redhat.com/s
 ```
 git clone https://github.com/iovisor/bcc.git
 mkdir bcc/build; cd bcc/build
-cmake ..
+cmake3 ..
 make
 sudo make install
 ```
@@ -544,6 +578,35 @@ sudo mount -t debugfs debugfs /sys/kernel/debug
 ```
 
 ### Test
+```
+sudo /usr/share/bcc/tools/execsnoop
+```
+
+## Alpine - Source
+
+### Install packages required for building
+
+```
+sudo apk add tar git build-base iperf linux-headers llvm10-dev llvm10-static \
+  clang-dev clang-static cmake python3 flex-dev bison luajit-dev elfutils-dev \
+  zlib-dev
+```
+
+### Build bcc
+
+```
+git clone https://github.com/iovisor/bcc.git
+mkdir bcc/build; cd bcc/build
+# python2 can be substituted here, depending on your environment
+cmake -DPYTHON_CMD=python3 ..
+make && sudo make install
+
+# Optional, but needed if you don't have /usr/bin/python on your system
+ln -s $(which python3) /usr/bin/python
+```
+
+### Test
+
 ```
 sudo /usr/share/bcc/tools/execsnoop
 ```

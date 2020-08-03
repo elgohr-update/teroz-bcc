@@ -176,6 +176,14 @@ class BPF {
     return BPFPercpuCgStorageTable<ValueType>({});
   }
 
+  template <class ValueType>
+  BPFQueueStackTable<ValueType> get_queuestack_table(const std::string& name) {
+    TableStorage::iterator it;
+    if (bpf_module_->table_storage().Find(Path({bpf_module_->id(), name}), it))
+      return BPFQueueStackTable<ValueType>(it->second);
+    return BPFQueueStackTable<ValueType>({});
+  }
+
   void* get_bsymcache(void) {
     if (bsymcache_ == NULL) {
       bsymcache_ = bcc_buildsymcache_new();
@@ -329,6 +337,12 @@ class USDT {
        const std::string& name, const std::string& probe_func);
   USDT(const USDT& usdt);
   USDT(USDT&& usdt) noexcept;
+
+  const std::string &binary_path() const { return binary_path_; }
+  pid_t pid() const { return pid_; }
+  const std::string &provider() const { return provider_; }
+  const std::string &name() const { return name_; }
+  const std::string &probe_func() const { return probe_func_; }
 
   StatusTuple init();
 

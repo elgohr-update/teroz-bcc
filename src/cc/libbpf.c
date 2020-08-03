@@ -215,6 +215,29 @@ static struct bpf_helper helpers[] = {
   {"tcp_send_ack", "5.5"},
   {"send_signal_thread", "5.5"},
   {"jiffies64", "5.5"},
+  {"read_branch_records", "5.6"},
+  {"get_ns_current_pid_tgid", "5.6"},
+  {"xdp_output", "5.6"},
+  {"get_netns_cookie", "5.6"},
+  {"get_current_ancestor_cgroup_id", "5.6"},
+  {"sk_assign", "5.6"},
+  {"ktime_get_boot_ns", "5.7"},
+  {"seq_printf", "5.7"},
+  {"seq_write", "5.7"},
+  {"sk_cgroup_id", "5.7"},
+  {"sk_ancestor_cgroup_id", "5.7"},
+  {"csum_level", "5.7"},
+  {"ringbuf_output", "5.8"},
+  {"ringbuf_reserve", "5.8"},
+  {"ringbuf_submit", "5.8"},
+  {"ringbuf_discard", "5.8"},
+  {"ringbuf_query", "5.8"},
+  {"skc_to_tcp6_sock", "5.9"},
+  {"skc_to_tcp_sock", "5.9"},
+  {"skc_to_tcp_timewait_sock", "5.9"},
+  {"skc_to_tcp_request_sock", "5.9"},
+  {"skc_to_udp6_sock", "5.9"},
+  {"bpf_get_task_stack", "5.9"},
 };
 
 static uint64_t ptr_to_u64(void *ptr)
@@ -305,6 +328,11 @@ int bpf_delete_elem(int fd, void *key)
   return bpf_map_delete_elem(fd, key);
 }
 
+int bpf_lookup_and_delete(int fd, void *key, void *value)
+{
+  return bpf_map_lookup_and_delete_elem(fd, key, value);
+}
+
 int bpf_get_first_key(int fd, void *key, size_t key_size)
 {
   int i, res;
@@ -374,8 +402,8 @@ static void bpf_print_hints(int ret, char *log)
   if (strstr(log, "invalid mem access 'inv'") != NULL) {
     fprintf(stderr, "HINT: The invalid mem access 'inv' error can happen "
       "if you try to dereference memory without first using "
-      "bpf_probe_read() to copy it to the BPF stack. Sometimes the "
-      "bpf_probe_read is automatic by the bcc rewriter, other times "
+      "bpf_probe_read_kernel() to copy it to the BPF stack. Sometimes the "
+      "bpf_probe_read_kernel() is automatic by the bcc rewriter, other times "
       "you'll need to be explicit.\n\n");
   }
 
@@ -553,11 +581,25 @@ int bcc_prog_load_xattr(struct bpf_load_program_attr *attr, int prog_len,
     } else if (strncmp(attr->name, "kretfunc__", 10) == 0) {
       name_offset = 10;
       expected_attach_type = BPF_TRACE_FEXIT;
+    } else if (strncmp(attr->name, "lsm__", 5) == 0) {
+      name_offset = 5;
+      expected_attach_type = BPF_LSM_MAC;
     }
 
-    if (attr->prog_type == BPF_PROG_TYPE_TRACING) {
-      attr->attach_btf_id = libbpf_find_vmlinux_btf_id(attr->name + name_offset,
-                                                       expected_attach_type);
+    if (attr->prog_type == BPF_PROG_TYPE_TRACING ||
+        attr->prog_type == BPF_PROG_TYPE_LSM) {
+      ret = libbpf_find_vmlinux_btf_id(attr->name + name_offset,
+                                       expected_attach_type);
+      if (ret == -EINVAL) {
+        fprintf(stderr, "bpf: vmlinux BTF is not found\n");
+        return ret;
+      } else if (ret < 0) {
+        fprintf(stderr, "bpf: %s is not found in vmlinux BTF\n",
+                attr->name + name_offset);
+        return ret;
+      }
+
+      attr->attach_btf_id = ret;
       attr->expected_attach_type = expected_attach_type;
     }
 
@@ -1162,14 +1204,7 @@ int bpf_attach_raw_tracepoint(int progfd, const char *tp_name)
 
 bool bpf_has_kernel_btf(void)
 {
-  return libbpf_find_vmlinux_btf_id("bpf_prog_put", 0);
-}
-
-int bpf_detach_kfunc(int prog_fd, char *func)
-{
-  UNUSED(prog_fd);
-  UNUSED(func);
-  return 0;
+  return libbpf_find_vmlinux_btf_id("bpf_prog_put", 0) > 0;
 }
 
 int bpf_attach_kfunc(int prog_fd)
@@ -1179,6 +1214,16 @@ int bpf_attach_kfunc(int prog_fd)
   ret = bpf_raw_tracepoint_open(NULL, prog_fd);
   if (ret < 0)
     fprintf(stderr, "bpf_attach_raw_tracepoint (kfunc): %s\n", strerror(errno));
+  return ret;
+}
+
+int bpf_attach_lsm(int prog_fd)
+{
+  int ret;
+
+  ret = bpf_raw_tracepoint_open(NULL, prog_fd);
+  if (ret < 0)
+    fprintf(stderr, "bpf_attach_raw_tracepoint (lsm): %s\n", strerror(errno));
   return ret;
 }
 
@@ -1374,4 +1419,36 @@ int bpf_close_perf_event_fd(int fd) {
     }
   }
   return error;
+}
+
+/* Create a new ringbuf manager to manage ringbuf associated with
+ * map_fd, associating it with callback sample_cb. */
+void * bpf_new_ringbuf(int map_fd, ring_buffer_sample_fn sample_cb, void *ctx) {
+    return ring_buffer__new(map_fd, sample_cb, ctx, NULL);
+}
+
+/* Free the ringbuf manager rb and all ring buffers associated with it. */
+void bpf_free_ringbuf(struct ring_buffer *rb) {
+    ring_buffer__free(rb);
+}
+
+/* Add a new ring buffer associated with map_fd to the ring buffer manager rb,
+ * associating it with callback sample_cb. */
+int bpf_add_ringbuf(struct ring_buffer *rb, int map_fd,
+                    ring_buffer_sample_fn sample_cb, void *ctx) {
+    return ring_buffer__add(rb, map_fd, sample_cb, ctx);
+}
+
+/* Poll for available data and consume, if data is available.  Returns number
+ * of records consumed, or a negative number if any callbacks returned an
+ * error. */
+int bpf_poll_ringbuf(struct ring_buffer *rb, int timeout_ms) {
+    return ring_buffer__poll(rb, timeout_ms);
+}
+
+/* Consume available data _without_ polling. Good for use cases where low
+ * latency is desired over performance impact.  Returns number of records
+ * consumed, or a negative number if any callbacks returned an error. */
+int bpf_consume_ringbuf(struct ring_buffer *rb) {
+    return ring_buffer__consume(rb);
 }

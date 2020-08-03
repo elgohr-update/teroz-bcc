@@ -51,6 +51,7 @@ R"********(
 #include <uapi/linux/if_packet.h>
 #include <linux/version.h>
 #include <linux/log2.h>
+#include <asm/page.h>
 
 #ifndef CONFIG_BPF_SYSCALL
 #error "CONFIG_BPF_SYSCALL is undefined, please check your .config or ask your Linux distro to enable this feature"
@@ -78,6 +79,15 @@ R"********(
         __attribute__ ((section(".maps." #name), used))	\
                 ____btf_map_##name = { }
 
+// Associate map with its key/value types for QUEUE/STACK map types
+#define BPF_ANNOTATE_KV_PAIR_QUEUESTACK(name, type_val)  \
+        struct ____btf_map_##name {     \
+                type_val value;       \
+        };            \
+        struct ____btf_map_##name     \
+        __attribute__ ((section(".maps." #name), used)) \
+                ____btf_map_##name = { }
+
 // Changes to the macro require changes in BFrontendAction classes
 #define BPF_F_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries, _flags) \
 struct _name##_table_t { \
@@ -98,6 +108,51 @@ struct _name##_table_t { \
 __attribute__((section("maps/" _table_type))) \
 struct _name##_table_t _name = { .flags = (_flags), .max_entries = (_max_entries) }; \
 BPF_ANNOTATE_KV_PAIR(_name, _key_type, _leaf_type)
+
+
+// Changes to the macro require changes in BFrontendAction classes
+#define BPF_QUEUESTACK(_table_type, _name, _leaf_type, _max_entries, _flags) \
+struct _name##_table_t { \
+  _leaf_type leaf; \
+  int * (*peek) (_leaf_type *); \
+  int * (*pop) (_leaf_type *); \
+  int * (*push) (_leaf_type *, u64); \
+  u32 max_entries; \
+  int flags; \
+}; \
+__attribute__((section("maps/" _table_type))) \
+struct _name##_table_t _name = { .flags = (_flags), .max_entries = (_max_entries) }; \
+BPF_ANNOTATE_KV_PAIR_QUEUESTACK(_name, _leaf_type)
+
+// define queue with 3 parameters (_type=queue/stack automatically) and default flags to 0
+#define BPF_QUEUE_STACK3(_type, _name, _leaf_type, _max_entries) \
+  BPF_QUEUESTACK(_type, _name, _leaf_type, _max_entries, 0)
+
+// define queue with 4 parameters (_type=queue/stack automatically)
+#define BPF_QUEUE_STACK4(_type, _name, _leaf_type, _max_entries, _flags) \
+  BPF_QUEUESTACK(_type, _name, _leaf_type, _max_entries, _flags)
+
+// helper for default-variable macro function
+#define BPF_QUEUE_STACKX(_1, _2, _3, _4, NAME, ...) NAME
+
+#define BPF_QUEUE(...) \
+  BPF_QUEUE_STACKX(__VA_ARGS__, BPF_QUEUE_STACK4, BPF_QUEUE_STACK3)("queue", __VA_ARGS__)
+
+#define BPF_STACK(...) \
+  BPF_QUEUE_STACKX(__VA_ARGS__, BPF_QUEUE_STACK4, BPF_QUEUE_STACK3)("stack", __VA_ARGS__)
+
+#define BPF_QUEUESTACK_PINNED(_table_type, _name, _leaf_type, _max_entries, _flags, _pinned) \
+BPF_QUEUESTACK(_table_type ":" _pinned, _name, _leaf_type, _max_entries, _flags)
+
+#define BPF_QUEUESTACK_PUBLIC(_table_type, _name, _leaf_type, _max_entries, _flags) \
+BPF_QUEUESTACK(_table_type, _name, _leaf_type, _max_entries, _flags); \
+__attribute__((section("maps/export"))) \
+struct _name##_table_t __##_name
+
+#define BPF_QUEUESTACK_SHARED(_table_type, _name, _leaf_type, _max_entries, _flags) \
+BPF_QUEUESTACK(_table_type, _name, _leaf_type, _max_entries, _flags); \
+__attribute__((section("maps/shared"))) \
+struct _name##_table_t __##_name
 
 #define BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries) \
 BPF_F_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries, 0)
@@ -128,7 +183,7 @@ struct _name##_table_t __##_name
 #endif
 #endif
 
-// Table for pushing custom events to userspace via ring buffer
+// Table for pushing custom events to userspace via perf ring buffer
 #define BPF_PERF_OUTPUT(_name) \
 struct _name##_table_t { \
   int key; \
@@ -140,6 +195,24 @@ struct _name##_table_t { \
 }; \
 __attribute__((section("maps/perf_output"))) \
 struct _name##_table_t _name = { .max_entries = 0 }
+
+// Table for pushing custom events to userspace via ring buffer
+#define BPF_RINGBUF_OUTPUT(_name, _num_pages) \
+struct _name##_table_t { \
+  int key; \
+  u32 leaf; \
+  /* map.ringbuf_output(data, data_size, flags) */ \
+  int (*ringbuf_output) (void *, u64, u64); \
+  /* map.ringbuf_reserve(data_size) */ \
+  void* (*ringbuf_reserve) (u64); \
+  /* map.ringbuf_discard(data, flags) */ \
+  void (*ringbuf_discard) (void *, u64); \
+  /* map.ringbuf_submit(data, flags) */ \
+  void (*ringbuf_submit) (void *, u64); \
+  u32 max_entries; \
+}; \
+__attribute__((section("maps/ringbuf"))) \
+struct _name##_table_t _name = { .max_entries = ((_num_pages) * PAGE_SIZE) }
 
 // Table for reading hw perf cpu counters
 #define BPF_PERF_ARRAY(_name, _max_entries) \
@@ -602,6 +675,7 @@ static long long (*bpf_tcp_gen_syncookie)(struct bpf_sock *sk, void *ip,
 static int (*bpf_skb_output)(void *ctx, void *map, __u64 flags, void *data,
                              __u64 size) =
   (void *)BPF_FUNC_skb_output;
+
 static int (*bpf_probe_read_user)(void *dst, __u32 size,
                                   const void *unsafe_ptr) =
   (void *)BPF_FUNC_probe_read_user;
@@ -614,11 +688,84 @@ static int (*bpf_probe_read_user_str)(void *dst, __u32 size,
 static int (*bpf_probe_read_kernel_str)(void *dst, __u32 size,
             const void *unsafe_ptr) =
   (void *)BPF_FUNC_probe_read_kernel_str;
+static int (*bpf_tcp_send_ack)(void *tp, __u32 rcv_nxt) =
+  (void *)BPF_FUNC_tcp_send_ack;
+static int (*bpf_send_signal_thread)(__u32 sig) =
+  (void *)BPF_FUNC_send_signal_thread;
+static __u64 (*bpf_jiffies64)(void) = (void *)BPF_FUNC_jiffies64;
+
+struct bpf_perf_event_data;
+static int (*bpf_read_branch_records)(struct bpf_perf_event_data *ctx, void *buf,
+                                      __u32 size, __u64 flags) =
+  (void *)BPF_FUNC_read_branch_records;
+static int (*bpf_get_ns_current_pid_tgid)(__u64 dev, __u64 ino,
+                                          struct bpf_pidns_info *nsdata,
+                                          __u32 size) =
+  (void *)BPF_FUNC_get_ns_current_pid_tgid;
+
+struct bpf_map;
+static int (*bpf_xdp_output)(void *ctx, struct bpf_map *map, __u64 flags,
+                             void *data, __u64 size) =
+  (void *)BPF_FUNC_xdp_output;
+static __u64 (*bpf_get_netns_cookie)(void *ctx) = (void *)BPF_FUNC_get_netns_cookie;
+static __u64 (*bpf_get_current_ancestor_cgroup_id)(int ancestor_level) =
+  (void *)BPF_FUNC_get_current_ancestor_cgroup_id;
+
+struct sk_buff;
+static int (*bpf_sk_assign)(void *skb, struct bpf_sock *sk, __u64 flags) =
+  (void *)BPF_FUNC_sk_assign;
+
+static __u64 (*bpf_ktime_get_boot_ns)(void) = (void *)BPF_FUNC_ktime_get_boot_ns;
+
+struct seq_file;
+static int (*bpf_seq_printf)(struct seq_file *m, const char *fmt, __u32 fmt_size,
+			     const void *data, __u32 data_len) =
+  (void *)BPF_FUNC_seq_printf;
+static int (*bpf_seq_write)(struct seq_file *m, const void *data, __u32 len) =
+  (void *)BPF_FUNC_seq_write;
+
+static __u64 (*bpf_sk_cgroup_id)(struct bpf_sock *sk) = (void *)BPF_FUNC_sk_cgroup_id;
+static __u64 (*bpf_sk_ancestor_cgroup_id)(struct bpf_sock *sk, int ancestor_level) =
+  (void *)BPF_FUNC_sk_ancestor_cgroup_id;
+
+static int (*bpf_ringbuf_output)(void *ringbuf, void *data, __u64 size, __u64 flags) =
+  (void *)BPF_FUNC_ringbuf_output;
+static void *(*bpf_ringbuf_reserve)(void *ringbuf, __u64 size, __u64 flags) =
+  (void *)BPF_FUNC_ringbuf_reserve;
+static void (*bpf_ringbuf_submit)(void *data, __u64 flags) =
+  (void *)BPF_FUNC_ringbuf_submit;
+static void (*bpf_ringbuf_discard)(void *data, __u64 flags) =
+  (void *)BPF_FUNC_ringbuf_discard;
+static __u64 (*bpf_ringbuf_query)(void *ringbuf, __u64 flags) =
+  (void *)BPF_FUNC_ringbuf_query;
+
+static int (*bpf_csum_level)(struct __sk_buff *skb, __u64 level) =
+  (void *)BPF_FUNC_csum_level;
+
+struct tcp6_sock;
+struct tcp_sock;
+struct tcp_timewait_sock;
+struct tcp_request_sock;
+struct udp6_sock;
+static struct tcp6_sock *(*bpf_skc_to_tcp6_sock)(void *sk) =
+  (void *)BPF_FUNC_skc_to_tcp6_sock;
+static struct tcp_sock *(*bpf_skc_to_tcp_sock)(void *sk) =
+  (void *)BPF_FUNC_skc_to_tcp_sock;
+static struct tcp_timewait_sock *(*bpf_skc_to_tcp_timewait_sock)(void *sk) =
+  (void *)BPF_FUNC_skc_to_tcp_timewait_sock;
+static struct tcp_request_sock *(*bpf_skc_to_tcp_request_sock)(void *sk) =
+  (void *)BPF_FUNC_skc_to_tcp_request_sock;
+static struct udp6_sock *(*bpf_skc_to_udp6_sock)(void *sk) =
+  (void *)BPF_FUNC_skc_to_udp6_sock;
+
+struct task_struct;
+static long (*bpf_get_task_stack)(struct task_struct *task, void *buf,
+				  __u32 size, __u64 flags) =
+  (void *)BPF_FUNC_get_task_stack;
 
 /* llvm builtin functions that eBPF C program may use to
  * emit BPF_LD_ABS and BPF_LD_IND instructions
  */
-struct sk_buff;
 unsigned long long load_byte(void *skb,
   unsigned long long off) asm("llvm.bpf.load.byte");
 unsigned long long load_half(void *skb,
@@ -862,8 +1009,8 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #if defined(__TARGET_ARCH_x86)
 #define bpf_target_x86
 #define bpf_target_defined
-#elif defined(__TARGET_ARCH_s930x)
-#define bpf_target_s930x
+#elif defined(__TARGET_ARCH_s390x)
+#define bpf_target_s390x
 #define bpf_target_defined
 #elif defined(__TARGET_ARCH_arm64)
 #define bpf_target_arm64
@@ -880,7 +1027,7 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #if defined(__x86_64__)
 #define bpf_target_x86
 #elif defined(__s390x__)
-#define bpf_target_s930x
+#define bpf_target_s390x
 #elif defined(__aarch64__)
 #define bpf_target_arm64
 #elif defined(__powerpc__)
@@ -898,7 +1045,7 @@ int bpf_usdt_readarg_p(int argc, struct pt_regs *ctx, void *buf, u64 len) asm("l
 #define PT_REGS_RC(ctx)		((ctx)->gpr[3])
 #define PT_REGS_IP(ctx)		((ctx)->nip)
 #define PT_REGS_SP(ctx)		((ctx)->gpr[1])
-#elif defined(bpf_target_s930x)
+#elif defined(bpf_target_s390x)
 #define PT_REGS_PARM1(x) ((x)->gprs[2])
 #define PT_REGS_PARM2(x) ((x)->gprs[3])
 #define PT_REGS_PARM3(x) ((x)->gprs[4])
@@ -973,22 +1120,27 @@ int raw_tracepoint__##event(struct bpf_raw_tracepoint_args *ctx)
 #define BPF_PROG(name, args...)                                 \
 int name(unsigned long long *ctx);                              \
 __attribute__((always_inline))                                  \
-static void ____##name(unsigned long long *ctx, ##args);        \
+static int ____##name(unsigned long long *ctx, ##args);         \
 int name(unsigned long long *ctx)                               \
 {                                                               \
+        int __ret;                                              \
+                                                                \
         _Pragma("GCC diagnostic push")                          \
         _Pragma("GCC diagnostic ignored \"-Wint-conversion\"")  \
-        ____##name(___bpf_ctx_cast(args));                      \
+        __ret = ____##name(___bpf_ctx_cast(args));              \
         _Pragma("GCC diagnostic pop")                           \
-        return 0;                                               \
+        return __ret;                                           \
 }                                                               \
-static void ____##name(unsigned long long *ctx, ##args)
+static int ____##name(unsigned long long *ctx, ##args)
 
 #define KFUNC_PROBE(event, args...) \
         BPF_PROG(kfunc__ ## event, args)
 
 #define KRETFUNC_PROBE(event, args...) \
         BPF_PROG(kretfunc__ ## event, args)
+
+#define LSM_PROBE(event, args...) \
+        BPF_PROG(lsm__ ## event, args)
 
 #define TP_DATA_LOC_READ_CONST(dst, field, length)                        \
         do {                                                              \
