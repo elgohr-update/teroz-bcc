@@ -20,6 +20,14 @@ struct event {
 	int flags;
 	char comm[TASK_COMM_LEN];
 	char fname[NAME_MAX];
+	__u64 rx_b;
+    __u64 tx_b;
+    __u64 span_us;
+    __u8 saddr[4];
+    __u8 daddr[4];
+    __u8 saddr_v6[16];
+    __u8 daddr_v6[16];
+    
 };
 
 #endif /* __OPENSNOOP_H */

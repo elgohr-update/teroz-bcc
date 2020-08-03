@@ -153,6 +153,7 @@ int main(int argc, char **argv)
 	time_t start_time;
 	int err;
 
+	printf("size of event %d\n",sizeof(struct event));
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
 	if (err)
 		return err;

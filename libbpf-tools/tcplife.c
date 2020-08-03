@@ -14,14 +14,15 @@
 #include <unistd.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-#include "opensnoop.h"
-#include "opensnoop.skel.h"
+#include "tcplife.h"
+#include "tcplife.skel.h"
 
 /* Tune the buffer size and wakeup rate. These settings cope with roughly
  * 50k opens/sec.
  */
 #define PERF_BUFFER_PAGES	64
 #define PERF_BUFFER_TIME_MS	10
+#define INVALID_UID  -1
 
 /* Set the poll timeout when no events occur. This can affect -d accuracy. */
 #define PERF_POLL_TIMEOUT_MS	100
@@ -176,7 +177,7 @@ static int bump_memlock_rlimit(void)
 
 void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
 {
-	const struct event *e = data;
+	const struct ip_data *e = data;
 	struct tm *tm;
 	char ts[32];
 	time_t t;
@@ -190,23 +191,23 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
 	time(&t);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-	if (e->ret >= 0) {
-		fd = e->ret;
-		err = 0;
-	} else {
-		fd = -1;
-		err = - e->ret;
-	}
+	// if (e->ret >= 0) {
+	// 	fd = e->ret;
+	// 	err = 0;
+	// } else {
+	// 	fd = -1;
+	// 	err = - e->ret;
+	// }
 
 	/* print output */
 	if (env.timestamp)
 		printf("%-8s ", ts);
-	if (env.print_uid)
-		printf("%-6d ", e->uid);
-	printf("%-6d %-16s %3lld %3lld ", e->pid, e->comm, e->rx_b, e->tx_b);
-	if (env.extended)
-		printf("%08o ", e->flags);
-	printf("%s\n", e->fname);
+	// if (env.print_uid)
+	// 	printf("%-6d ", e->uid);
+	printf("%-6d %-16s %3d %3d ", e->pid, e->comm, fd, err);
+	// if (env.extended)
+	// 	printf("%08o ", e->flags);
+	// printf("%s\n", e->fname);
 }
 
 void handle_lost_events(void *ctx, int cpu, __u64 lost_cnt)
@@ -230,7 +231,7 @@ int main(int argc, char **argv)
 	};
 	struct perf_buffer_opts pb_opts;
 	struct perf_buffer *pb = NULL;
-	struct opensnoop_bpf *obj;
+	struct tcplife_bpf *obj;
 	__u64 time_end = 0;
 	int err;
 
@@ -246,25 +247,25 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	obj = opensnoop_bpf__open();
+	obj = tcplife_bpf__open();
 	if (!obj) {
 		fprintf(stderr, "failed to open and/or load BPF object\n");
 		return 1;
 	}
 
 	/* initialize global data (filtering options) */
-	obj->rodata->targ_tgid = env.pid;
-	obj->rodata->targ_pid = env.tid;
-	obj->rodata->targ_uid = env.uid;
-	obj->rodata->targ_failed = env.failed;
+	// obj->rodata->targ_tgid = env.pid;
+	// obj->rodata->targ_pid = env.tid;
+	// obj->rodata->targ_uid = env.uid;
+	// obj->rodata->targ_failed = env.failed;
 
-	err = opensnoop_bpf__load(obj);
+	err = tcplife_bpf__load(obj);
 	if (err) {
 		fprintf(stderr, "failed to load BPF object: %d\n", err);
 		goto cleanup;
 	}
 
-	err = opensnoop_bpf__attach(obj);
+	err = tcplife_bpf__attach(obj);
 	if (err) {
 		fprintf(stderr, "failed to attach BPF programs\n");
 		goto cleanup;
@@ -275,7 +276,7 @@ int main(int argc, char **argv)
 		printf("%-8s ", "TIME");
 	if (env.print_uid)
 		printf("%-6s ", "UID");
-	printf("%-6s %-16s %3s %3s ", "PID", "COMM", "RX", "TX");
+	printf("%-6s %-16s %3s %3s ", "PID", "COMM", "FD", "ERR");
 	if (env.extended)
 		printf("%-8s ", "FLAGS");
 	printf("%s\n", "PATH");
@@ -311,7 +312,7 @@ int main(int argc, char **argv)
 
 cleanup:
 	perf_buffer__free(pb);
-	opensnoop_bpf__destroy(obj);
+	tcplife_bpf__destroy(obj);
 
 	return err != 0;
 }
