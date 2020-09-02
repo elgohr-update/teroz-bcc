@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "runqslower.skel.h": "c",
+        "bpf_helpers.h": "c",
+        "bpf_tracing.h": "c",
+        "xfsslower.h": "c"
+    }
+}
