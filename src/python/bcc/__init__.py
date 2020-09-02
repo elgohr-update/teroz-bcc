@@ -22,6 +22,7 @@ import re
 import struct
 import errno
 import sys
+import platform
 
 from .libbcc import lib, bcc_symbol, bcc_symbol_option, bcc_stacktrace_build_id, _SYM_CB_TYPE
 from .table import Table, PerfEventArray, RingBuf, BPF_MAP_TYPE_QUEUE, BPF_MAP_TYPE_STACK
@@ -108,6 +109,10 @@ class PerfType:
     # From perf_type_id in uapi/linux/perf_event.h
     HARDWARE = 0
     SOFTWARE = 1
+    TRACEPOINT = 2
+    HW_CACHE = 3
+    RAW = 4
+    BREAKPOINT = 5
 
 class PerfHWConfig:
     # From perf_hw_id in uapi/linux/perf_event.h
@@ -895,6 +900,9 @@ class BPF(object):
 
     @staticmethod
     def support_kfunc():
+        # there's no trampoline support for other than x86_64 arch
+        if platform.machine() != 'x86_64':
+            return False;
         if not lib.bpf_has_kernel_btf():
             return False;
         # kernel symbol "bpf_trampoline_link_prog" indicates kfunc support
@@ -1270,7 +1278,10 @@ class BPF(object):
             task = line[:16].lstrip()
             line = line[17:]
             ts_end = line.find(b":")
-            pid, cpu, flags, ts = line[:ts_end].split()
+            try:
+                pid, cpu, flags, ts = line[:ts_end].split()
+            except Exception as e:
+                continue
             cpu = cpu[1:-1]
             # line[ts_end:] will have ": [sym_or_addr]: msgs"
             # For trace_pipe debug output, the addr typically
@@ -1282,7 +1293,10 @@ class BPF(object):
             line = line[ts_end + 1:]
             sym_end = line.find(b":")
             msg = line[sym_end + 2:]
-            return (task, int(pid), int(cpu), flags, float(ts), msg)
+            try:
+                return (task, int(pid), int(cpu), flags, float(ts), msg)
+            except Exception as e:
+                return ("Unknown", 0, 0, "Unknown", 0.0, "Unknown")
 
     def trace_readline(self, nonblocking=False):
         """trace_readline(nonblocking=False)
